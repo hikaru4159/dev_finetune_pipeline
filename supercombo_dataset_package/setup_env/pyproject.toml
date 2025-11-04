@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "supercombo-dataset-env"
+version = "0.1.0"
+description = "Minimal environment for supercombo_dataset_package"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "zstandard",
+    "pycapnp"
+]

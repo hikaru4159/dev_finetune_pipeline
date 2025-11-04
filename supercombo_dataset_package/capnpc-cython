@@ -1,0 +1,7 @@
+#!/home/user1434407/v0.9.6/dev_openpilot_pipeline/.venv311/bin/python3.11
+import sys
+from capnp._gen import main
+if __name__ == '__main__':
+    if sys.argv[0].endswith('.exe'):
+        sys.argv[0] = sys.argv[0][:-4]
+    sys.exit(main())
