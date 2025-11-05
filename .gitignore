@@ -3,6 +3,7 @@ DATA/
 # 仮想環境
 .venv/
 venv/
+**/site-packages/
 # Pythonキャッシュ
 __pycache__/
 # Jupyter/IPythonキャッシュ
