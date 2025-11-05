@@ -1,0 +1,6 @@
+[submodule "openpilot"]
+	path = openpilot
+	url = https://github.com/commaai/openpilot.git
+[submodule "comma2k19"]
+	path = comma2k19
+	url = https://github.com/commaai/comma2k19.git
