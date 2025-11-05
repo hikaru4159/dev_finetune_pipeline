@@ -1,5 +1,9 @@
 # DATAディレクトリを除外
 DATA/
+# サブモジュールは追跡対象外
+openpilot/
+comma2k19/
+openpilot-pipeline/
 # 仮想環境
 .venv/
 venv/
