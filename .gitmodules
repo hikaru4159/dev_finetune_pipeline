@@ -1,3 +1,6 @@
+[submodule "openpilot-pipeline"]
+	path = openpilot-pipeline
+	url = https://github.com/mbalesni/openpilot-pipeline
 [submodule "openpilot"]
 	path = openpilot
 	url = https://github.com/commaai/openpilot.git

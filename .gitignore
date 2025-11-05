@@ -1,0 +1,26 @@
+# DATAディレクトリを除外
+DATA/
+# 仮想環境
+.venv/
+venv/
+# Pythonキャッシュ
+__pycache__/
+# Jupyter/IPythonキャッシュ
+.ipynb_checkpoints/
+# 一時・出力・キャッシュ系
+tmp/
+cache/
+wandb/
+*.log
+# チェックポイント・モデル出力
+nets/checkpoints/
+nets/model_itr/
+openpilot-pipeline/nets/checkpoints/
+openpilot-pipeline/nets/model_itr/
+# バックアップや一時退避
+*_bak/
+*_bak/
+*~
+# テスト出力
+analysis_outputs/
+data_debug_out/
