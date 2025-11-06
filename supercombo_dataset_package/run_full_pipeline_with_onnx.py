@@ -24,11 +24,12 @@ Usage:
   --epochs: 学習エポック数（デフォルト: 1）
   --batch-size: バッチサイズ（デフォルト: 1）
   --adapter-out: AdapterHeadチェックポイント出力ディレクトリ
-  --pth-out: 最終PyTorch重みファイルパス
+  --pth-out: 最終PyTorch重みファイルパス（参考：実際はbest_adapter_ep{epochs}.ptとして保存）
   --onnx-out: 出力ONNXファイルパス
   --base-onnx: ベースsupercombo.onnxファイルパス
   --learning-rate: 学習率（デフォルト: 0.001）
   --weight-decay: 重み減衰（デフォルト: 0.0001）
+  --patience: Early stopping patience（デフォルト: 5）
 """
 import argparse
 import subprocess
@@ -66,11 +67,12 @@ def main():
     p.add_argument('--epochs', type=int, default=1, help='学習エポック数')
     p.add_argument('--batch-size', type=int, default=1, help='バッチサイズ')
     p.add_argument('--adapter-out', required=True, help='AdapterHeadチェックポイント出力ディレクトリ')
-    p.add_argument('--pth-out', required=True, help='最終PyTorch重みファイルパス')
+    p.add_argument('--pth-out', required=False, default=None, help='最終PyTorch重みファイルパス（省略可、自動検出）')
     p.add_argument('--onnx-out', required=True, help='出力ONNXファイルパス')
     p.add_argument('--base-onnx', required=True, help='ベースsupercombo.onnxファイルパス')
     p.add_argument('--learning-rate', type=float, default=0.001, help='学習率')
-    p.add_argument('--weight-decay', type=float, default=0.0001, help='重み減衰')
+    p.add_argument('--weight-decay', type=float, default=0.0001, help='重み減衰（L2正則化）')
+    p.add_argument('--patience', type=int, default=5, help='Early stopping patience')
     args = p.parse_args()
 
     # 出力ディレクトリ作成
@@ -114,25 +116,47 @@ def main():
             '--epochs', str(args.epochs),
             '--batch-size', str(args.batch_size),
             '--out-dir', args.adapter_out,
-            '--learning-rate', str(args.learning_rate),
-            '--weight-decay', str(args.weight_decay)
+            '--lr', str(args.learning_rate),
+            '--weight-decay', str(args.weight_decay),
+            '--patience', str(args.patience)
         ]
         result = subprocess.run(train_cmd, check=True, capture_output=False)
         step2_time = time.time() - step2_start
         print(f"\n✓ AdapterHead学習完了 ({step2_time:.1f}秒)")
 
-        # 3. ONNX変換（4テンソル置換）
+        # 実際に保存されたPyTorch重みファイルを検索
+        # train_multi_adapter.pyは best_adapter_ep{epochs}.pt として保存する
+        actual_pth_path = Path(args.adapter_out) / f'best_adapter_ep{args.epochs}.pt'
+        
+        # ファイルの存在確認
+        if not actual_pth_path.exists():
+            # 最後の手段：adapter_out内の最新のbest_adapter_*.ptを検索
+            best_files = list(Path(args.adapter_out).glob('best_adapter_ep*.pt'))
+            if best_files:
+                actual_pth_path = max(best_files, key=lambda p: p.stat().st_mtime)
+                print(f"[INFO] 最新のチェックポイントを使用: {actual_pth_path}")
+            else:
+                raise FileNotFoundError(f"PyTorch重みファイルが見つかりません: {args.adapter_out}")
+        else:
+            print(f"[INFO] PyTorch重みファイル: {actual_pth_path}")
+        
+        # もしユーザーがpth-outを指定していた場合は情報メッセージ
+        if args.pth_out and str(actual_pth_path) != args.pth_out:
+            print(f"[INFO] 注意: 指定されたパス '{args.pth_out}' の代わりに '{actual_pth_path}' を使用します")
+
+
+        # 3. ONNX変換（8テンソル置換）
         print("\n" + "=" * 80)
         print(f"ステップ 3/3: ONNX変換")
-        print(f"  PyTorch重み: {args.pth_out}")
+        print(f"  PyTorch重み: {actual_pth_path}")
         print(f"  ベースONNX: {args.base_onnx}")
         print(f"  出力ONNX: {args.onnx_out}")
-        print(f"  注意: temporal_policy.temporal_hydraの4テンソルを置換します")
+        print(f"  注意: temporal_policy.temporal_hydraの8テンソルを置換します")
         print("=" * 80)
         
         step3_start = time.time()
         result = subprocess.run(
-            [sys.executable, str(ONNX_EXPORT_SCRIPT), args.pth_out, args.onnx_out, args.base_onnx],
+            [sys.executable, str(ONNX_EXPORT_SCRIPT), str(actual_pth_path), args.onnx_out, args.base_onnx],
             check=True,
             capture_output=False
         )
@@ -157,3 +181,7 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
