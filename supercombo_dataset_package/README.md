@@ -251,38 +251,103 @@ python supercombo_dataset_package/run_full_pipeline_with_onnx.py \
 ### 期待される出力
 
 ```
+### 実行例（推奨設定）
+
+以下は本格的な学習を行う際の推奨コマンド例です：
+
+```bash
+# GPU環境での本格的な学習（推奨）
+source supercombo_dataset_package/setup_env/venv/bin/activate
+python supercombo_dataset_package/run_full_pipeline_with_onnx.py \
+  --data-dir DATA/itsdata \
+  --out-root tmp/production_data \
+  --epochs 30 \
+  --batch-size 64 \
+  --adapter-out tmp/production_adapter \
+  --pth-out tmp/production_adapter/best_adapter.pt \
+  --onnx-out nets/model_itr/supercombo_production.onnx \
+  --base-onnx base/supercombo.onnx \
+  --learning-rate 0.001 \
+  --weight-decay 0.0001 \
+  --patience 15
+```
+
+**各パラメータの説明:**
+- `--data-dir`: 入力データディレクトリ（runフォルダを含む）
+- `--out-root`: 変換後のnpyデータ出力先
+- `--epochs`: 学習エポック数（30推奨、データ量に応じて調整）
+- `--batch-size`: バッチサイズ（GPU: 64推奨、CPU: 2-4推奨）
+- `--adapter-out`: 学習チェックポイント保存先
+- `--pth-out`: 最終PyTorchモデル保存パス
+- `--onnx-out`: 最終ONNXモデル保存パス
+- `--base-onnx`: ベースとなるsupercombo.onnx
+- `--learning-rate`: 学習率（0.001推奨）
+- `--weight-decay`: L2正則化（0.0001推奨）
+- `--patience`: Early Stopping（15推奨）
+
+### 期待される出力
+
+```
 ================================================================================
 ステップ 1/3: データセット変換
   入力: DATA/itsdata
-  出力: tmp/full_npy
+  出力: tmp/production_data
   注意: desire補完は画像から光学フロー推論で自動実行されます
 ================================================================================
 [INFO] Extracting desire from images: DATA/itsdata/1/fcamera.hevc
 [INFO] Desire extracted from images, final shape: (1, 12, 8)
-...
+[INFO] Run 1: Saved feature_buffer (1, 99, 512) and desire (1, 99, 8)
+[INFO] Run 2: Saved feature_buffer (1, 99, 512) and desire (1, 99, 8)
 ✓ データセット変換完了 (45.2秒)
 
 ================================================================================
 ステップ 2/3: AdapterHead追加学習
-  入力: tmp/full_npy
-  出力: tmp/full_adapter_ckpt
-  設定: epochs=5, batch_size=2, lr=0.001
+  入力: tmp/production_data
+  出力: tmp/production_adapter
+  設定: epochs=30, batch_size=64, lr=0.001
 ================================================================================
-Epoch 1/5, Train Loss: 0.234, Val Loss: 0.189, Val Acc: 0.875
+[INFO] Using device: cuda (GPU環境の場合)
+[INFO] Loaded 198 temporal samples from 2 runs
+[INFO] Train samples: 159, Val samples: 39
+[INFO] Model structure (完全ONNX互換):
+  Total parameters: 18,792
+
+Epoch   1/30 [0.2s] | Train: loss=2.153 acc=0.000 | Val: loss=2.079 acc=0.000
+Epoch   8/30 [0.2s] | Train: loss=2.038 acc=0.384 | Val: loss=1.962 acc=0.974
+  → ✓ Best model saved (val_acc=0.974)
 ...
-✓ AdapterHead学習完了 (123.5秒)
+Epoch  30/30 [0.2s] | Train: loss=1.770 acc=0.805 | Val: loss=1.696 acc=0.974
+
+Training completed in 6.5s
+  Best val_loss: 1.696
+  Best val_acc: 0.974
+  Best model: tmp/production_adapter/best_adapter_ep30.pt
+✓ AdapterHead学習完了 (6.5秒)
 
 ================================================================================
 ステップ 3/3: ONNX変換
-  PyTorch重み: tmp/full_adapter_ckpt/best_adapter_ep5.pt
+  PyTorch重み: tmp/production_adapter/best_adapter.pt
   ベースONNX: base/supercombo.onnx
-  出力ONNX: nets/model_itr/test_adapter_final.onnx
-  注意: temporal_policy.temporal_hydraの4テンソルを置換します
+  出力ONNX: nets/model_itr/supercombo_production.onnx
+  注意: temporal_policy.temporal_hydraの8テンソルを置換します
 ================================================================================
+置換対象の重み（8個）:
+✓ in_layer.weight ((32, 512))
+✓ in_layer.bias ((32,))
+✓ res_layer_0.weight ((32, 32))
+✓ res_layer_0.bias ((32,))
+✓ res_layer_2.weight ((32, 32))
+✓ res_layer_2.bias ((32,))
+✓ final_layer.weight ((8, 32))
+✓ final_layer.bias ((8,))
+
+✓ Successfully replaced 8/8 weight tensors
+✓ All weights successfully exported to ONNX
 ✓ ONNX変換完了 (2.3秒)
 
 ================================================================================
 ✓✓✓ 全パイプライン完了 ✓✓✓
+```
   合計時間: 171.0秒
   出力ONNX: nets/model_itr/test_adapter_final.onnx
 ================================================================================
