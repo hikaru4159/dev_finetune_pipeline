@@ -220,41 +220,71 @@ def extract_big_input_imgs(log_dir, out_dir, n_frames=12, shape=(128,256)):
         arr = arr[:, -n_frames:, :, :]
     return arr, frame_times
 def extract_desire(log_dir, frame_times):
-    rlog_path = os.path.join(log_dir, "rlog.zst")
+    """
+    Extract desire from images using optical flow-based inference.
+    Falls back to keepLane (class 7) if inference fails.
+    """
     DESIRE_NUM = 8
-    # desire値を画像フレームタイミングに同期（最新100フレーム、直前値補完・許容時間1秒）
-    vals = []
+    n_frames = len(frame_times)
+    
+    # Try to generate desire from images
     try:
-        lr = LogReader(rlog_path)
-        msg_list = []
-        for msg in lr:
-            ts = getattr(msg, 'logMonoTime', None)
-            if hasattr(msg, "desire") and ts is not None:
-                # desire値を画像フレームタイミング（100msec）に同期（全フレーム分、直前値補完・許容時間150msec）
-                d = int(msg.desire)
-                onehot = np.zeros(DESIRE_NUM, dtype=np.float32)
-                if 0 <= d < DESIRE_NUM:
-                    onehot[d] = 1.0
-                msg_list.append((ts, onehot))
-        # 直前値補完（許容時間150msec=1.5e8）
-        last_val = np.zeros(DESIRE_NUM, dtype=np.float32)
-        last_ts = None
-        for ft in frame_times:
-            candidates = [(t, v) for t, v in msg_list if t <= ft]
-            if candidates:
-                t, v = candidates[-1]
-                if last_ts is None or ft - t <= 1.5e8:
-                    last_val = v
-                    last_ts = t
-                else:
-                    last_val = np.zeros(DESIRE_NUM, dtype=np.float32)
-            else:
-                last_val = np.zeros(DESIRE_NUM, dtype=np.float32)
-            vals.append(last_val)
-    except Exception:
-        pass
-    arr = np.array(vals, dtype=np.float32)[None, ...] if vals else np.zeros((1,len(frame_times),DESIRE_NUM), dtype=np.float32)
-    return arr
+        import sys
+        import os
+        import tempfile
+        
+        # Add desire_analysis to path
+        desire_analysis_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'desire_analysis'))
+        if desire_analysis_path not in sys.path:
+            sys.path.insert(0, desire_analysis_path)
+        
+        from desire_from_images import extract_images_from_hevc, extract_desire_from_images
+        
+        # Find camera file
+        camera_file = None
+        for name in ('fcamera.hevc', 'ecamera.hevc'):
+            path = os.path.join(log_dir, name)
+            if os.path.exists(path):
+                camera_file = path
+                break
+        
+        if camera_file is None:
+            print(f"[WARN] No camera file found in {log_dir}, using keepLane fallback")
+            arr = np.zeros((1, n_frames, DESIRE_NUM), dtype=np.float32)
+            arr[:, :, 7] = 1.0  # keepLane
+            return arr
+        
+        # Extract images and infer desire
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            print(f"[INFO] Extracting desire from images: {camera_file}")
+            extract_images_from_hevc(camera_file, tmp_dir, fps=10)
+            
+            # Infer desire for actual number of frames, then pad/trim to n_frames
+            desire_arr = extract_desire_from_images(tmp_dir, n_frames=n_frames)
+            
+            # Handle size mismatch: pad with keepLane or trim
+            if desire_arr.shape[1] < n_frames:
+                print(f"[INFO] Padding desire from {desire_arr.shape[1]} to {n_frames} frames with keepLane")
+                padded = np.zeros((1, n_frames, DESIRE_NUM), dtype=np.float32)
+                padded[:, :desire_arr.shape[1], :] = desire_arr
+                # Fill remaining frames with keepLane
+                padded[:, desire_arr.shape[1]:, 7] = 1.0
+                desire_arr = padded
+            elif desire_arr.shape[1] > n_frames:
+                print(f"[INFO] Trimming desire from {desire_arr.shape[1]} to {n_frames} frames")
+                desire_arr = desire_arr[:, :n_frames, :]
+            
+            print(f"[INFO] Desire extracted from images, final shape: {desire_arr.shape}")
+            return desire_arr
+            
+    except Exception as e:
+        print(f"[WARN] Failed to extract desire from images: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback to keepLane
+        arr = np.zeros((1, n_frames, DESIRE_NUM), dtype=np.float32)
+        arr[:, :, 7] = 1.0  # keepLane
+        return arr
 def extract_traffic_convention(log_dir):
     rlog_path = os.path.join(log_dir, "rlog.zst")
     arr = np.array([[0, 1]], dtype=np.float32)
@@ -525,7 +555,9 @@ def process_log_dir(args_tuple):
         if T_des >= 100:
             desire_out = desire[:, -100:, :]
         else:
+            # Pad with keepLane (class 7) instead of zeros
             pad = np.zeros((1, 100 - T_des, DESIRE_NUM), dtype=np.float32)
+            pad[:, :, 7] = 1.0  # keepLane
             desire_out = np.concatenate([pad, desire], axis=1)
 
         # pad/truncate prev_desired_curv to (1,100,1)

@@ -49,10 +49,12 @@ class RunsDataset(Dataset):
 class AdapterHead(nn.Module):
     def __init__(self, in_dim, out_dim):
         super().__init__()
+        # Match ONNX desire output structure: 512 -> 32 -> 8
+        # This allows direct weight export to ONNX temporal_policy.temporal_hydra layers
         self.net = nn.Sequential(
-            nn.Linear(in_dim, 256),
+            nn.Linear(in_dim, 32),  # matches temporal_hydra.in_layer.desire_state
             nn.ReLU(),
-            nn.Linear(256, out_dim)
+            nn.Linear(32, out_dim)  # matches temporal_hydra.final_layer.desire_state
         )
 
     def forward(self, x):

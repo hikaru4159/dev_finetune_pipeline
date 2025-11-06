@@ -24,6 +24,9 @@ def prepare_run_for_training(run_dir: str, out_dir: str) -> dict:
     Prepare a single run folder for training. Ensures required `.npy` files
     exist in `out_dir` (created if missing) matching the shapes required by
     supercombo.onnx. Returns a dict of paths to saved npy files.
+    
+    - Generates desire.npy from images if missing using desire_from_images module
+    - Generates features_buffer.npy using ONNX model if DRIVING_VISION_ONNX is set
     """
     # Use existing transform script if available
     from supercombo_dataset_package.transform_to_supercombo_dataset_gui import process_log_dir
@@ -57,8 +60,28 @@ def prepare_run_for_training(run_dir: str, out_dir: str) -> dict:
     for name, shape in required.items():
         p = os.path.join(out_dir, f"{name}.npy")
         if not os.path.exists(p):
+            # Special handling for desire: generate from images only
+            if name == 'desire':
+                try:
+                    print(f"[INFO] desire.npy missing - generating from images")
+                    desire_arr = _generate_desire_from_images(run_dir, out_dir)
+                    
+                    # If image inference failed, use keepLane fallback
+                    if desire_arr is None:
+                        print(f"[WARN] Image-based desire inference failed, using keepLane fallback")
+                        desire_arr = np.zeros(shape, dtype=np.float32)
+                        desire_arr[:, :, 7] = 1.0  # keepLane for all frames
+                    
+                    np.save(p, desire_arr)
+                    print(f"[INFO] Generated desire.npy with shape {desire_arr.shape}")
+                    
+                except Exception as e:
+                    print(f"[ERROR] Failed to generate desire: {e}")
+                    arr = np.zeros(shape, dtype=np.float32)
+                    arr[:, :, 7] = 1.0  # keepLane fallback
+                    np.save(p, arr)
             # Special-case: try to generate features_buffer if possible
-            if name == 'features_buffer' and 'DRIVING_VISION_ONNX' in os.environ:
+            elif name == 'features_buffer' and 'DRIVING_VISION_ONNX' in os.environ:
                 onnx_path = os.environ['DRIVING_VISION_ONNX']
                 try:
                     from ..generate_features_buffer import load_frames, build_parsed_sequences, run_onnx_for_features
@@ -84,6 +107,87 @@ def prepare_run_for_training(run_dir: str, out_dir: str) -> dict:
                     pass
         out[name] = p
     return out
+
+
+def _generate_desire_from_rlog(run_dir: str, out_dir: str, n_frames: int = 100):
+    """
+    Generate desire.npy from rlog file using logged lateralPlan.desire or inferred from carState.
+    Falls back to None if rlog reading fails.
+    
+    Returns:
+        numpy array of shape (1, 100, 8) or None if failed
+    """
+    run_path = Path(run_dir)
+    rlog_file = run_path / 'rlog'
+    
+    if not rlog_file.exists():
+        print(f"[WARN] rlog file not found in {run_dir}")
+        return None
+    
+    print(f"[INFO] Extracting desire from rlog: {rlog_file}")
+    
+    # Import extract_desire_from_rlog
+    try:
+        extract_desire_module_path = os.path.abspath(os.path.join(SC_PKG_DIR, '..'))
+        if extract_desire_module_path not in sys.path:
+            sys.path.insert(0, extract_desire_module_path)
+        from extract_desire_from_rlog import extract_desire_from_rlog
+    except ImportError as e:
+        print(f"[ERROR] Failed to import extract_desire_from_rlog: {e}")
+        return None
+    
+    try:
+        desire_arr = extract_desire_from_rlog(str(rlog_file), n_frames=n_frames)
+        return desire_arr
+    except Exception as e:
+        print(f"[ERROR] Failed to extract desire from rlog: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def _generate_desire_from_images(run_dir: str, out_dir: str, n_frames: int = 100):
+    """
+    Generate desire.npy from images using rule-based optical flow analysis.
+    Falls back to None if optical flow detection fails.
+    
+    Returns:
+        numpy array of shape (1, 100, 8) or None if failed
+    """
+    import tempfile
+    
+    # Find camera file (fcamera.hevc or ecamera.hevc)
+    run_path = Path(run_dir)
+    camera_files = list(run_path.glob('*camera.hevc'))
+    
+    if not camera_files:
+        print(f"[WARN] No camera.hevc file found in {run_dir}")
+        return None
+    
+    camera_file = camera_files[0]
+    print(f"[INFO] Using camera file: {camera_file}")
+    
+    # Import desire_from_images module
+    try:
+        desire_analysis_path = os.path.abspath(os.path.join(SC_PKG_DIR, '..', 'desire_analysis'))
+        if desire_analysis_path not in sys.path:
+            sys.path.insert(0, desire_analysis_path)
+        from desire_from_images import extract_images_from_hevc, extract_desire_from_images
+    except ImportError as e:
+        print(f"[ERROR] Failed to import desire_from_images: {e}")
+        return None
+    
+    # Extract images to temp directory
+    with tempfile.TemporaryDirectory() as tmp_img_dir:
+        try:
+            extract_images_from_hevc(str(camera_file), tmp_img_dir, fps=10)
+            desire_arr = extract_desire_from_images(tmp_img_dir, n_frames=n_frames)
+            return desire_arr
+        except Exception as e:
+            print(f"[ERROR] Failed to extract desire from images: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
 
 def onnx_model_wrapper(onnx_path: str):

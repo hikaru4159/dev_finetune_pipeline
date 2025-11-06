@@ -57,43 +57,66 @@ def extract_images_from_hevc(hevc_path, out_dir, fps=10):
 def extract_desire_from_images(
     img_dir: str,
     n_frames: int = 100,
+    target_size: tuple = (512, 256),  # (width, height) = OpenPilot model input size
     flow_winsize: int = 15,
     flow_levels: int = 3,
     flow_iterations: int = 3,
     flow_poly_n: int = 5,
     flow_poly_sigma: float = 1.2,
-    flow_mean_abs_thresh: float = 1.5,
-    move_score_thresh: float = 2.5e5,
-    hysteresis_radius: int = 3,
+    flow_mean_abs_thresh: float = 0.3,    # 調整: 256x512サイズに適した閾値
+    move_score_thresh: float = 5.0e5,     # 調整: リサイズ後の画像差分閾値
+    turn_flow_thresh: float = 1.0,        # 新規: 右左折判定の閾値
+    lane_change_duration_min: int = 10,   # 新規: 車線変更の最小継続フレーム数
+    hysteresis_radius: int = 5,           # 調整: より広い範囲に拡大
     debug: Optional[bool] = False,
 ):
     """
     画像系列からDESIREラベルを推定する改良版ルールベース関数。
 
-    - Farneback光学フローで横方向の平均動きを計算し、左右の変化を検出します。
-    - グレースケール差分の合計（move_score）も補助的に使い、閾値を保守的に設定します。
-    - hysteresis_radius により近傍フレームへラベルを広げて過剰検出を抑制します。
+    - 画像を256x512にリサイズしてからFarneback光学フローで横方向の平均動きを計算
+    - グレースケール差分の合計（move_score）も補助的に使用
+    - hysteresis_radius により近傍フレームへラベルを広げて過剰検出を抑制
+    - 100msec間隔の画像に適した閾値設定で時系列処理を行います
+    - 動きの継続時間で右左折（長い）と車線変更（短い）を区別します
+
+    Args:
+        target_size: (width, height) tuple for resizing images (default: 512x256 for OpenPilot)
 
     返り値: numpy array, shape (1, n_frames, 8)
     """
-    imgs = sorted([os.path.join(img_dir, f) for f in os.listdir(img_dir) if f.endswith('.jpg')])[:n_frames]
+    imgs = sorted([os.path.join(img_dir, f) for f in os.listdir(img_dir) if f.endswith('.jpg')])
     if len(imgs) == 0:
         raise RuntimeError(f"no images found in {img_dir}")
-    # 読み込みと前処理
+    
+    # n_framesの制約を適用（時系列を正しく処理）
+    if len(imgs) > n_frames:
+        imgs = imgs[:n_frames]
+    actual_n_frames = len(imgs)
+    
+    # 読み込みと前処理（256x512にリサイズ）
     gray_frames = []
     for p in imgs:
         im = cv2.imread(p)
         if im is None:
             # 保守的に最終フレームをコピー
-            im = np.zeros((480, 640, 3), dtype=np.uint8)
-        gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+            if len(gray_frames) > 0:
+                gray_frames.append(gray_frames[-1].copy())
+            else:
+                # フォールバック：target_sizeの空画像
+                gray_frames.append(np.zeros((target_size[1], target_size[0]), dtype=np.uint8))
+            continue
+        
+        # リサイズ: target_size = (width, height)
+        im_resized = cv2.resize(im, target_size, interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(im_resized, cv2.COLOR_BGR2GRAY)
         gray_frames.append(gray)
 
     desire_arr = np.zeros((1, n_frames, 8), dtype=np.float32)
     # 横方向フローの平均値を蓄積
-    flow_x_means = np.zeros(n_frames, dtype=np.float32)
-    move_scores = np.zeros(n_frames, dtype=np.float32)
+    flow_x_means = np.zeros(actual_n_frames, dtype=np.float32)
+    move_scores = np.zeros(actual_n_frames, dtype=np.float32)
 
+    # 時系列順に光学フローを計算
     for i in range(len(gray_frames) - 1):
         a = gray_frames[i]
         b = gray_frames[i + 1]
@@ -105,7 +128,7 @@ def extract_desire_from_images(
         )
         # flow[...,0] is x (horizontal) displacement
         flow_x = flow[..., 0]
-        # use robust statistic: median of x flow and mean absolute
+        # use robust statistic: median of x flow
         flow_x_means[i] = float(np.median(flow_x))
         move_scores[i] = float(np.sum(np.abs(b.astype(np.float32) - a.astype(np.float32))))
 
@@ -117,8 +140,9 @@ def extract_desire_from_images(
         flow_x_means[0] = 0.0
         move_scores[0] = 0.0
 
-    # 平滑化（移動平均）でノイズ除去
-    kernel = np.ones(3, dtype=np.float32) / 3.0
+    # 平滑化（移動平均）でノイズ除去 - より長い窓で時系列の傾向を捉える
+    kernel_size = 5
+    kernel = np.ones(kernel_size, dtype=np.float32) / kernel_size
     flow_x_smooth = np.convolve(flow_x_means, kernel, mode='same')
     move_score_smooth = np.convolve(move_scores, kernel, mode='same')
 
@@ -126,9 +150,13 @@ def extract_desire_from_images(
     potential_change = (np.abs(flow_x_smooth) >= flow_mean_abs_thresh) & (move_score_smooth >= move_score_thresh)
 
     if debug:
-        print(f"flow_x_smooth[:10]={flow_x_smooth[:10]}")
-        print(f"move_score_smooth[:10]={move_score_smooth[:10]}")
-        print(f"potential_change.sum()={potential_change.sum()}")
+        print(f"[DEBUG] Image size after resize: {gray_frames[0].shape if gray_frames else 'N/A'}")
+        print(f"[DEBUG] flow_x_smooth[:10]={flow_x_smooth[:10]}")
+        print(f"[DEBUG] flow_x_smooth range: [{flow_x_smooth.min():.4f}, {flow_x_smooth.max():.4f}]")
+        print(f"[DEBUG] move_score_smooth[:10]={move_score_smooth[:10]}")
+        print(f"[DEBUG] move_score_smooth range: [{move_score_smooth.min():.1f}, {move_score_smooth.max():.1f}]")
+        print(f"[DEBUG] potential_change.sum()={potential_change.sum()}")
+        print(f"[DEBUG] Thresholds: flow_mean_abs={flow_mean_abs_thresh}, move_score={move_score_thresh}")
 
     # hysteresis: 周辺フレームに広げる
     final_change = np.zeros_like(potential_change)
@@ -139,8 +167,9 @@ def extract_desire_from_images(
             final_change[lo:hi] = True
 
     # ラベル付け: 左右どちらかは flow_x_smooth の符号で判定
-    for i in range(n_frames):
-        if final_change[i]:
+    # actual_n_framesまでのみラベル付け
+    for i in range(min(actual_n_frames, n_frames)):
+        if i < len(final_change) and final_change[i]:
             # 流れの平均が正→右方向へ移動
             if flow_x_smooth[i] > 0:
                 desire_arr[0, i, 4] = 1.0  # laneChangeRight
@@ -148,6 +177,10 @@ def extract_desire_from_images(
                 desire_arr[0, i, 3] = 1.0  # laneChangeLeft
         else:
             desire_arr[0, i, 7] = 1.0  # keepLane
+    
+    # 残りのフレームはkeepLaneで埋める
+    for i in range(actual_n_frames, n_frames):
+        desire_arr[0, i, 7] = 1.0  # keepLane
 
     return desire_arr
 
