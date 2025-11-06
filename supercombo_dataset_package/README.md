@@ -173,13 +173,16 @@ rlogにdesireイベントが存在しない場合、**画像から光学フロ�
 
 データ変換→AdapterHead学習→ONNX変換を一括実行するスクリプトを提供しています。
 
-### 使い方
+### スクリプト名
+**`run_full_pipeline_with_onnx.py`** - 3ステップを自動実行する一括学習スクリプト
+
+### 基本的な使い方
 
 ```bash
 # 仮想環境を有効化
 source supercombo_dataset_package/setup_env/venv/bin/activate
 
-# 一括実行
+# 一括実行（基本コマンド）
 python supercombo_dataset_package/run_full_pipeline_with_onnx.py \
   --data-dir DATA/itsdata \
   --out-root tmp/full_npy \
@@ -191,6 +194,56 @@ python supercombo_dataset_package/run_full_pipeline_with_onnx.py \
   --base-onnx base/supercombo.onnx \
   --learning-rate 0.001 \
   --weight-decay 0.0001
+```
+
+### 実行コマンド例（シナリオ別）
+
+**例1: クイックテスト（動作確認用）**
+```bash
+# 少ないエポック、小さいバッチで素早く動作確認
+python supercombo_dataset_package/run_full_pipeline_with_onnx.py \
+  --data-dir DATA/itsdata \
+  --out-root tmp/test_npy \
+  --epochs 3 \
+  --batch-size 2 \
+  --adapter-out tmp/test_adapter \
+  --pth-out tmp/test_adapter/best.pt \
+  --onnx-out nets/model_itr/test_quick.onnx \
+  --base-onnx base/supercombo.onnx
+```
+
+**例2: 標準学習（CPU環境）**
+```bash
+# 中規模学習、Early Stopping有効
+python supercombo_dataset_package/run_full_pipeline_with_onnx.py \
+  --data-dir DATA/itsdata \
+  --out-root tmp/standard_npy \
+  --epochs 10 \
+  --batch-size 4 \
+  --adapter-out tmp/standard_adapter \
+  --pth-out tmp/standard_adapter/best.pt \
+  --onnx-out nets/model_itr/supercombo_cpu.onnx \
+  --base-onnx base/supercombo.onnx \
+  --learning-rate 0.001 \
+  --weight-decay 0.0001 \
+  --patience 15
+```
+
+**例3: 本格的学習（GPU環境推奨）**
+```bash
+# 大規模学習、高バッチサイズ
+python supercombo_dataset_package/run_full_pipeline_with_onnx.py \
+  --data-dir DATA/itsdata \
+  --out-root tmp/production_npy \
+  --epochs 30 \
+  --batch-size 64 \
+  --adapter-out tmp/production_adapter \
+  --pth-out tmp/production_adapter/best.pt \
+  --onnx-out nets/model_itr/supercombo_gpu.onnx \
+  --base-onnx base/supercombo.onnx \
+  --learning-rate 0.001 \
+  --weight-decay 0.0001 \
+  --patience 20
 ```
 
 ### パイプラインの流れ
